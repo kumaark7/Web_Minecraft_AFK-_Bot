@@ -53,6 +53,10 @@ pnpm lint
 pnpm dev
 ```
 
+## Deployment
+
+For a lightweight 1 GB Oracle VPS setup, see `deploy/oracle-1gb`.
+
 ## Scope
 
 Larry Control is intended for cracked/offline-mode Minecraft servers only. It does not use Microsoft, Mojang, or official Minecraft account authentication.
