@@ -101,7 +101,10 @@ NODE_ENV=production
 PORT=3001
 CORS_ORIGIN=http://YOUR_SERVER_IP_OR_DOMAIN
 DATABASE_URL=postgresql://larry:REPLACE_WITH_STRONG_PASSWORD@localhost:5432/larrycontrol
+COOKIE_SECURE=false
 ```
+
+Use `COOKIE_SECURE=false` for plain HTTP on an IP address. Change it to `true` after adding HTTPS.
 
 ```bash
 sudo chmod 600 /etc/larry-control/backend.env

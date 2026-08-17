@@ -28,6 +28,9 @@ const corsOrigin = process.env.CORS_ORIGIN || 'http://localhost:5173';
 const cookieName = 'larry_session';
 const oneWeekMs = 7 * 24 * 60 * 60 * 1000;
 const scrypt = promisify(scryptCallback);
+const useSecureCookies = process.env.COOKIE_SECURE
+  ? process.env.COOKIE_SECURE === 'true'
+  : process.env.NODE_ENV === 'production';
 
 if (process.env.NODE_ENV === 'production' && !process.env.JWT_SECRET) {
   throw new Error('JWT_SECRET must be set in production');
@@ -105,7 +108,7 @@ function setAuthCookie(res: Response, token: string) {
   res.cookie(cookieName, token, {
     httpOnly: true,
     sameSite: 'lax',
-    secure: process.env.NODE_ENV === 'production',
+    secure: useSecureCookies,
     maxAge: oneWeekMs,
     path: '/',
   });
@@ -115,7 +118,7 @@ function clearAuthCookie(res: Response) {
   res.clearCookie(cookieName, {
     httpOnly: true,
     sameSite: 'lax',
-    secure: process.env.NODE_ENV === 'production',
+    secure: useSecureCookies,
     path: '/',
   });
 }
