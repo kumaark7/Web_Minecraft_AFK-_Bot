@@ -36,3 +36,37 @@ export interface ServerPayload {
   version?: string | null;
   authMode?: 'offline';
 }
+
+export interface BotRecord {
+  id: string;
+  userId: string;
+  serverId: string;
+  name: string;
+  mcUsername: string;
+  status: string;
+  config: unknown;
+  createdAt: string;
+  updatedAt: string;
+  server: {
+    id: string;
+    name: string;
+    host: string;
+    port: number;
+    version: string | null;
+    authMode: string;
+  };
+}
+
+export interface BotPayload {
+  serverId: string;
+  name: string;
+  mcUsername: string;
+}
+
+export interface BotRuntimeState {
+  botId: string;
+  status: string;
+  logs: string[];
+  startedAt: string | null;
+  lastError: string | null;
+}

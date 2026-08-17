@@ -3,9 +3,13 @@ import cors from 'cors';
 import dotenv from 'dotenv';
 import { randomBytes, scrypt as scryptCallback, timingSafeEqual, createHmac } from 'crypto';
 import { promisify } from 'util';
+import { createBot, Bot as MineflayerBot } from 'mineflayer';
 import {
   AuthResponse,
   AuthUser,
+  BotPayload,
+  BotRecord,
+  BotRuntimeState,
   HealthResponse,
   ServerPayload,
   ServerRecord,
@@ -41,6 +45,15 @@ interface AuthedRequest extends Request {
 interface TokenPayload extends AuthUser {
   exp: number;
 }
+
+interface ManagedBot {
+  bot: MineflayerBot;
+  state: BotRuntimeState;
+  connectTimeout: NodeJS.Timeout;
+}
+
+const managedBots = new Map<string, ManagedBot>();
+const botConnectTimeoutMs = Number(process.env.BOT_CONNECT_TIMEOUT_MS || 15000);
 
 function parseCookies(cookieHeader: string | undefined): Record<string, string> {
   if (!cookieHeader) return {};
@@ -149,6 +162,32 @@ function toServerRecord(server: {
   };
 }
 
+function toBotRecord(bot: {
+  id: string;
+  userId: string;
+  serverId: string;
+  name: string;
+  mcUsername: string;
+  status: string;
+  config: unknown;
+  createdAt: Date;
+  updatedAt: Date;
+  server: {
+    id: string;
+    name: string;
+    host: string;
+    port: number;
+    version: string | null;
+    authMode: string;
+  };
+}): BotRecord {
+  return {
+    ...bot,
+    createdAt: bot.createdAt.toISOString(),
+    updatedAt: bot.updatedAt.toISOString(),
+  };
+}
+
 function getString(value: unknown): string {
   return typeof value === 'string' ? value.trim() : '';
 }
@@ -192,6 +231,61 @@ function validateServerPayload(body: unknown): { data?: ServerPayload; error?: s
       authMode: 'offline',
     },
   };
+}
+
+function validateBotPayload(body: unknown): { data?: BotPayload; error?: string } {
+  const input = body as Record<string, unknown>;
+  const serverId = getString(input.serverId);
+  const name = getString(input.name);
+  const mcUsername = getString(input.mcUsername);
+
+  if (!serverId) return { error: 'Server is required' };
+  if (name.length < 2) return { error: 'Bot name must be at least 2 characters' };
+  if (!/^[A-Za-z0-9_]{3,16}$/.test(mcUsername)) {
+    return { error: 'Minecraft username must be 3-16 letters, numbers, or underscores' };
+  }
+
+  return {
+    data: {
+      serverId,
+      name,
+      mcUsername,
+    },
+  };
+}
+
+function appendBotLog(state: BotRuntimeState, message: string) {
+  state.logs = [
+    ...state.logs.slice(-49),
+    `${new Date().toISOString()} ${message}`,
+  ];
+}
+
+async function stopManagedBot(botId: string, status = 'STOPPED') {
+  const managed = managedBots.get(botId);
+  if (managed) {
+    appendBotLog(managed.state, 'Stopping bot');
+    const runtimeBot = managed.bot;
+
+    clearTimeout(managed.connectTimeout);
+    managed.bot.removeAllListeners();
+    managed.bot.on('error', () => undefined);
+
+    if (typeof runtimeBot.quit === 'function') {
+      runtimeBot.quit();
+    } else if (typeof runtimeBot.end === 'function') {
+      runtimeBot.end('Stopped by Larry Control');
+    } else if (typeof runtimeBot._client?.end === 'function') {
+      runtimeBot._client.end('Stopped by Larry Control');
+    }
+
+    managedBots.delete(botId);
+  }
+
+  await prisma.bot.update({
+    where: { id: botId },
+    data: { status },
+  });
 }
 
 function requireAuth(req: AuthedRequest, res: Response, next: () => void) {
@@ -363,6 +457,189 @@ app.delete('/api/servers/:id', requireAuth, async (req: AuthedRequest, res: Resp
   });
 
   res.json({ ok: true });
+});
+
+app.get('/api/bots', requireAuth, async (req: AuthedRequest, res: Response<BotRecord[]>) => {
+  const bots = await prisma.bot.findMany({
+    where: { userId: (req.user as AuthUser).id },
+    include: { server: true },
+    orderBy: { createdAt: 'desc' },
+  });
+
+  res.json(bots.map(toBotRecord));
+});
+
+app.post('/api/bots', requireAuth, async (req: AuthedRequest, res: Response<BotRecord | { error: string }>) => {
+  const payload = validateBotPayload(req.body);
+  if (payload.error || !payload.data) {
+    res.status(400).json({ error: payload.error || 'Invalid bot payload' });
+    return;
+  }
+
+  const server = await prisma.server.findFirst({
+    where: {
+      id: payload.data.serverId,
+      userId: (req.user as AuthUser).id,
+    },
+  });
+
+  if (!server) {
+    res.status(404).json({ error: 'Server not found' });
+    return;
+  }
+
+  const bot = await prisma.bot.create({
+    data: {
+      userId: (req.user as AuthUser).id,
+      serverId: server.id,
+      name: payload.data.name,
+      mcUsername: payload.data.mcUsername,
+      config: {},
+    },
+    include: { server: true },
+  });
+
+  res.status(201).json(toBotRecord(bot));
+});
+
+app.post('/api/bots/:id/start', requireAuth, async (req: AuthedRequest, res: Response<BotRuntimeState | { error: string }>) => {
+  if (managedBots.has(req.params.id)) {
+    res.status(409).json({ error: 'Bot is already running' });
+    return;
+  }
+
+  const botRecord = await prisma.bot.findFirst({
+    where: {
+      id: req.params.id,
+      userId: (req.user as AuthUser).id,
+    },
+    include: { server: true },
+  });
+
+  if (!botRecord) {
+    res.status(404).json({ error: 'Bot not found' });
+    return;
+  }
+
+  if (botRecord.server.authMode !== 'offline') {
+    res.status(400).json({ error: 'Only offline server mode is supported' });
+    return;
+  }
+
+  const botId = botRecord.id;
+  const state: BotRuntimeState = {
+    botId,
+    status: 'CONNECTING',
+    logs: [],
+    startedAt: new Date().toISOString(),
+    lastError: null,
+  };
+
+  appendBotLog(state, `Connecting ${botRecord.mcUsername} to ${botRecord.server.host}:${botRecord.server.port}`);
+
+  const mineflayerBot = createBot({
+    host: botRecord.server.host,
+    port: botRecord.server.port,
+    username: botRecord.mcUsername,
+    auth: 'offline',
+    ...(botRecord.server.version ? { version: botRecord.server.version } : {}),
+  });
+
+  function markRuntimeError(err: unknown) {
+    clearTimeout(connectTimeout);
+    const message = err instanceof Error ? err.message : String(err);
+    state.status = 'ERROR';
+    state.lastError = message;
+    appendBotLog(state, `Error: ${message}`);
+    void prisma.bot.update({ where: { id: botId }, data: { status: 'ERROR' } });
+  }
+
+  const connectTimeout = setTimeout(() => {
+    if (state.status === 'CONNECTING' || state.status === 'LOGIN') {
+      markRuntimeError(new Error(`Bot did not come online within ${botConnectTimeoutMs}ms`));
+    }
+  }, botConnectTimeoutMs);
+
+  managedBots.set(botId, {
+    bot: mineflayerBot,
+    state,
+    connectTimeout,
+  });
+
+  await prisma.bot.update({
+    where: { id: botRecord.id },
+    data: { status: 'CONNECTING' },
+  });
+
+  mineflayerBot.once('login', () => {
+    state.status = 'LOGIN';
+    appendBotLog(state, 'Login successful');
+    void prisma.bot.update({ where: { id: botRecord.id }, data: { status: 'LOGIN' } });
+  });
+
+  mineflayerBot.once('spawn', () => {
+    clearTimeout(connectTimeout);
+    state.status = 'ONLINE';
+    appendBotLog(state, 'Spawned and online');
+    void prisma.bot.update({ where: { id: botRecord.id }, data: { status: 'ONLINE' } });
+  });
+
+  mineflayerBot.on('message', (message) => {
+    appendBotLog(state, `[CHAT] ${message.toString()}`);
+  });
+
+  mineflayerBot.once('end', (reason) => {
+    clearTimeout(connectTimeout);
+    state.status = 'STOPPED';
+    appendBotLog(state, `Disconnected: ${reason || 'connection ended'}`);
+    managedBots.delete(botRecord.id);
+    void prisma.bot.update({ where: { id: botRecord.id }, data: { status: 'STOPPED' } });
+  });
+
+  mineflayerBot.once('error', markRuntimeError);
+  mineflayerBot._client.on('error', markRuntimeError);
+
+  res.status(202).json(state);
+});
+
+app.post('/api/bots/:id/stop', requireAuth, async (req: AuthedRequest, res: Response<{ ok: true } | { error: string }>) => {
+  const existing = await prisma.bot.findFirst({
+    where: {
+      id: req.params.id,
+      userId: (req.user as AuthUser).id,
+    },
+  });
+
+  if (!existing) {
+    res.status(404).json({ error: 'Bot not found' });
+    return;
+  }
+
+  await stopManagedBot(existing.id);
+  res.json({ ok: true });
+});
+
+app.get('/api/bots/:id/runtime', requireAuth, async (req: AuthedRequest, res: Response<BotRuntimeState | { error: string }>) => {
+  const existing = await prisma.bot.findFirst({
+    where: {
+      id: req.params.id,
+      userId: (req.user as AuthUser).id,
+    },
+  });
+
+  if (!existing) {
+    res.status(404).json({ error: 'Bot not found' });
+    return;
+  }
+
+  const managed = managedBots.get(existing.id);
+  res.json(managed?.state || {
+    botId: existing.id,
+    status: existing.status,
+    logs: [],
+    startedAt: null,
+    lastError: null,
+  });
 });
 
 async function startServer() {

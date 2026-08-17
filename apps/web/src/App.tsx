@@ -1,5 +1,5 @@
 import { CSSProperties, FormEvent, useEffect, useMemo, useState } from 'react';
-import { AuthUser, HealthResponse, ServerRecord } from '@larry/shared';
+import { AuthUser, BotRecord, BotRuntimeState, HealthResponse, ServerRecord } from '@larry/shared';
 
 const apiBase = 'http://localhost:3001/api';
 
@@ -18,6 +18,12 @@ interface ServerForm {
   version: string;
 }
 
+interface BotForm {
+  serverId: string;
+  name: string;
+  mcUsername: string;
+}
+
 const emptyAuthForm: AuthForm = {
   username: '',
   email: '',
@@ -29,6 +35,12 @@ const emptyServerForm: ServerForm = {
   host: '',
   port: '25565',
   version: '',
+};
+
+const emptyBotForm: BotForm = {
+  serverId: '',
+  name: '',
+  mcUsername: '',
 };
 
 async function apiRequest<T>(path: string, options: RequestInit = {}): Promise<T> {
@@ -55,9 +67,12 @@ export default function App() {
   const [health, setHealth] = useState<HealthResponse | null>(null);
   const [user, setUser] = useState<AuthUser | null>(null);
   const [servers, setServers] = useState<ServerRecord[]>([]);
+  const [bots, setBots] = useState<BotRecord[]>([]);
+  const [runtimeStates, setRuntimeStates] = useState<Record<string, BotRuntimeState>>({});
   const [authMode, setAuthMode] = useState<AuthMode>('login');
   const [authForm, setAuthForm] = useState<AuthForm>(emptyAuthForm);
   const [serverForm, setServerForm] = useState<ServerForm>(emptyServerForm);
+  const [botForm, setBotForm] = useState<BotForm>(emptyBotForm);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -68,6 +83,16 @@ export default function App() {
   async function loadServers() {
     const data = await apiRequest<ServerRecord[]>('/servers');
     setServers(data);
+  }
+
+  async function loadBots() {
+    const data = await apiRequest<BotRecord[]>('/bots');
+    setBots(data);
+  }
+
+  async function loadBotRuntime(botId: string) {
+    const data = await apiRequest<BotRuntimeState>(`/bots/${botId}/runtime`);
+    setRuntimeStates((current) => ({ ...current, [botId]: data }));
   }
 
   useEffect(() => {
@@ -82,6 +107,7 @@ export default function App() {
         if (authData?.user) {
           setUser(authData.user);
           await loadServers();
+          await loadBots();
         }
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Unable to load Larry Control');
@@ -110,6 +136,7 @@ export default function App() {
       setUser(data.user);
       setAuthForm(emptyAuthForm);
       await loadServers();
+      await loadBots();
       setMessage(authMode === 'register' ? 'Account created.' : 'Logged in.');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Authentication failed');
@@ -123,8 +150,11 @@ export default function App() {
     await apiRequest<void>('/auth/logout', { method: 'POST' });
     setUser(null);
     setServers([]);
+    setBots([]);
+    setRuntimeStates({});
     setEditingId(null);
     setServerForm(emptyServerForm);
+    setBotForm(emptyBotForm);
     setMessage('Logged out.');
   }
 
@@ -169,6 +199,53 @@ export default function App() {
       setMessage('Server deleted.');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unable to delete server');
+    }
+  }
+
+  async function handleBotSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setError(null);
+    setMessage(null);
+
+    try {
+      const bot = await apiRequest<BotRecord>('/bots', {
+        method: 'POST',
+        body: JSON.stringify(botForm),
+      });
+      setBotForm(emptyBotForm);
+      await loadBots();
+      await loadBotRuntime(bot.id);
+      setMessage('Bot created.');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Unable to create bot');
+    }
+  }
+
+  async function handleStartBot(botId: string) {
+    setError(null);
+    setMessage(null);
+
+    try {
+      const runtime = await apiRequest<BotRuntimeState>(`/bots/${botId}/start`, { method: 'POST' });
+      setRuntimeStates((current) => ({ ...current, [botId]: runtime }));
+      await loadBots();
+      setMessage('Bot start requested.');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Unable to start bot');
+    }
+  }
+
+  async function handleStopBot(botId: string) {
+    setError(null);
+    setMessage(null);
+
+    try {
+      await apiRequest<{ ok: true }>(`/bots/${botId}/stop`, { method: 'POST' });
+      await loadBots();
+      await loadBotRuntime(botId);
+      setMessage('Bot stopped.');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Unable to stop bot');
     }
   }
 
@@ -361,6 +438,96 @@ export default function App() {
               ))}
             </div>
           </div>
+
+          <div style={{ ...styles.panel, ...styles.fullWidthPanel }}>
+            <div style={styles.panelHeader}>
+              <div>
+                <h2 style={styles.panelTitle}>Bots</h2>
+                <p style={styles.muted}>Single-bot engine for offline-mode servers</p>
+              </div>
+            </div>
+
+            <form style={styles.form} onSubmit={handleBotSubmit}>
+              <div style={styles.formRow}>
+                <label style={styles.label}>
+                  Server
+                  <select
+                    style={styles.input}
+                    value={botForm.serverId}
+                    onChange={(event) => setBotForm({ ...botForm, serverId: event.target.value })}
+                    required
+                  >
+                    <option value="">Select server</option>
+                    {servers.map((server) => (
+                      <option key={server.id} value={server.id}>
+                        {server.name} ({server.host}:{server.port})
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label style={styles.label}>
+                  Bot Name
+                  <input
+                    style={styles.input}
+                    value={botForm.name}
+                    onChange={(event) => setBotForm({ ...botForm, name: event.target.value })}
+                    required
+                  />
+                </label>
+              </div>
+              <label style={styles.label}>
+                Minecraft Username
+                <input
+                  style={styles.input}
+                  value={botForm.mcUsername}
+                  onChange={(event) => setBotForm({ ...botForm, mcUsername: event.target.value })}
+                  minLength={3}
+                  maxLength={16}
+                  required
+                />
+              </label>
+              <button style={styles.primaryButton} type="submit" disabled={servers.length === 0}>
+                Create Bot
+              </button>
+            </form>
+
+            <div style={{ ...styles.serverList, marginTop: '18px' }}>
+              {bots.length === 0 ? (
+                <p style={styles.empty}>No bots yet.</p>
+              ) : bots.map((bot) => {
+                const runtime = runtimeStates[bot.id];
+
+                return (
+                  <article key={bot.id} style={styles.serverCard}>
+                    <div>
+                      <h3 style={styles.serverName}>{bot.name}</h3>
+                      <p style={styles.muted}>
+                        {bot.mcUsername} → {bot.server.name}
+                      </p>
+                      <p style={styles.tag}>{runtime?.status || bot.status}</p>
+                      {runtime?.lastError && <p style={styles.errorText}>{runtime.lastError}</p>}
+                      {runtime && runtime.logs.length > 0 && (
+                        <pre style={styles.logBox}>
+                          {runtime.logs.slice(-5).join('\n')}
+                        </pre>
+                      )}
+                    </div>
+                    <div style={styles.actions}>
+                      <button style={styles.primaryButton} type="button" onClick={() => void handleStartBot(bot.id)}>
+                        Start
+                      </button>
+                      <button style={styles.secondaryButton} type="button" onClick={() => void handleStopBot(bot.id)}>
+                        Stop
+                      </button>
+                      <button style={styles.secondaryButton} type="button" onClick={() => void loadBotRuntime(bot.id)}>
+                        Refresh
+                      </button>
+                    </div>
+                  </article>
+                );
+              })}
+            </div>
+          </div>
         </section>
       )}
     </main>
@@ -416,6 +583,11 @@ const styles: Record<string, CSSProperties> = {
     background: '#ffffff',
     padding: '20px',
   },
+  fullWidthPanel: {
+    gridColumn: '1 / -1',
+    width: '100%',
+    boxSizing: 'border-box',
+  },
   panelHeader: {
     display: 'flex',
     alignItems: 'flex-start',
@@ -454,6 +626,21 @@ const styles: Record<string, CSSProperties> = {
     borderRadius: '6px',
     padding: '8px 10px',
     fontSize: '15px',
+  },
+  logBox: {
+    maxWidth: '640px',
+    whiteSpace: 'pre-wrap',
+    border: '1px solid #dce2ec',
+    borderRadius: '6px',
+    background: '#f7f8fb',
+    padding: '10px',
+    color: '#344054',
+    fontSize: '12px',
+  },
+  errorText: {
+    color: '#b42318',
+    fontSize: '13px',
+    margin: '8px 0',
   },
   actions: {
     display: 'flex',

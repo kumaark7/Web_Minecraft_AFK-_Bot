@@ -8,11 +8,12 @@
     "lint": "eslint \"src/**/*.ts\""
   },
   "dependencies": {
+    "@larry/database": "workspace:*",
+    "@larry/shared": "workspace:*",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
     "express": "^4.19.2",
-    "@larry/shared": "workspace:*",
-    "@larry/database": "workspace:*"
+    "mineflayer": "^4.37.1"
   },
   "devDependencies": {
     "@types/cors": "^2.8.17",
