@@ -1,0 +1,20 @@
+{
+  "name": "larry-control-monorepo",
+  "private": true,
+  "scripts": {
+    "dev": "concurrently \"pnpm --filter @larry/backend dev\" \"pnpm --filter @larry/web dev\"",
+    "build": "pnpm -r build",
+    "lint": "pnpm -r lint",
+    "format": "prettier --write \"**/*.{ts,tsx,json,md}\""
+  },
+  "devDependencies": {
+    "@typescript-eslint/eslint-plugin": "^7.8.0",
+    "@typescript-eslint/parser": "^7.8.0",
+    "concurrently": "^8.2.2",
+    "eslint": "^8.57.0",
+    "eslint-plugin-react": "^7.34.1",
+    "eslint-plugin-react-hooks": "^4.6.2",
+    "prettier": "^3.2.5",
+    "typescript": "^5.4.5"
+  }
+}
