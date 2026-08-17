@@ -6,8 +6,8 @@
   "scripts": {
     "build": "tsc",
     "lint": "eslint \"src/**/*.ts\"",
-    "db:generate": "prisma generate",
-    "db:migrate": "prisma migrate dev --name init"
+    "db:generate": "prisma generate --schema ../../packages/database/prisma/schema.prisma",
+    "db:migrate": "prisma migrate dev --schema ../../packages/database/prisma/schema.prisma --name init"
   },
   "dependencies": {
     "@prisma/client": "^5.14.0"
