@@ -7,6 +7,7 @@ import { createBot, Bot as MineflayerBot } from 'mineflayer';
 import {
   AuthResponse,
   AuthUser,
+  BotBulkActionResponse,
   BotCommandPayload,
   BotCommandResponse,
   BotPayload,
@@ -53,11 +54,39 @@ interface ManagedBot {
   userId: string;
   state: BotRuntimeState;
   connectTimeout: NodeJS.Timeout;
+  afkInterval: NodeJS.Timeout;
+  reconnectTimeout: NodeJS.Timeout | null;
+  reconnectAttempts: number;
+  stopping: boolean;
 }
+
+type BotRecordWithServer = {
+  id: string;
+  userId: string;
+  serverId: string;
+  name: string;
+  mcUsername: string;
+  status: string;
+  config: unknown;
+  createdAt: Date;
+  updatedAt: Date;
+  server: {
+    id: string;
+    name: string;
+    host: string;
+    port: number;
+    version: string | null;
+    authMode: string;
+  };
+};
 
 const managedBots = new Map<string, ManagedBot>();
 const botConnectTimeoutMs = Number(process.env.BOT_CONNECT_TIMEOUT_MS || 15000);
 const maxActiveBotsPerUser = Number(process.env.MAX_ACTIVE_BOTS_PER_USER || 3);
+const afkTickMs = Number(process.env.AFK_TICK_MS || 12000);
+const reconnectDelayMs = Number(process.env.BOT_RECONNECT_DELAY_MS || 10000);
+const maxReconnectAttempts = Number(process.env.BOT_MAX_RECONNECT_ATTEMPTS || 5);
+const commandLogDelayMs = Number(process.env.COMMAND_LOG_DELAY_MS || 5000);
 
 function parseCookies(cookieHeader: string | undefined): Record<string, string> {
   if (!cookieHeader) return {};
@@ -282,13 +311,27 @@ function appendBotLog(state: BotRuntimeState, message: string) {
   ];
 }
 
+function wait(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function getRuntimeSnapshot(state: BotRuntimeState, logLimit = 50): BotRuntimeState {
+  return {
+    ...state,
+    logs: state.logs.slice(-logLimit),
+  };
+}
+
 async function stopManagedBot(botId: string, status = 'STOPPED') {
   const managed = managedBots.get(botId);
   if (managed) {
     appendBotLog(managed.state, 'Stopping bot');
     const runtimeBot = managed.bot;
 
+    managed.stopping = true;
     clearTimeout(managed.connectTimeout);
+    clearInterval(managed.afkInterval);
+    if (managed.reconnectTimeout) clearTimeout(managed.reconnectTimeout);
     managed.bot.removeAllListeners();
     managed.bot.on('error', () => undefined);
 
@@ -507,6 +550,99 @@ app.get('/api/bots', requireAuth, async (req: AuthedRequest, res: Response<BotRe
   res.json(bots.map(toBotRecord));
 });
 
+app.get('/api/bots/runtimes', requireAuth, async (req: AuthedRequest, res: Response<BotRuntimeState[]>) => {
+  const bots = await prisma.bot.findMany({
+    where: { userId: (req.user as AuthUser).id },
+    orderBy: { createdAt: 'desc' },
+  });
+
+  res.json(bots.map((bot) => {
+    const managed = managedBots.get(bot.id);
+
+    return managed ? getRuntimeSnapshot(managed.state, 12) : {
+      botId: bot.id,
+      status: bot.status,
+      logs: [],
+      startedAt: null,
+      lastError: null,
+      reconnectAttempts: 0,
+      lastCommandAt: null,
+    };
+  }));
+});
+
+app.post('/api/bots/start-all', requireAuth, async (req: AuthedRequest, res: Response<BotBulkActionResponse>) => {
+  const bots = await prisma.bot.findMany({
+    where: { userId: (req.user as AuthUser).id },
+    include: { server: true },
+    orderBy: { createdAt: 'asc' },
+  });
+
+  const results = [];
+  for (const bot of bots) {
+    const result = await startManagedBot(bot.id, (req.user as AuthUser).id);
+    results.push({
+      botId: bot.id,
+      ok: result.statusCode >= 200 && result.statusCode < 300,
+      ...(result.statusCode >= 200 && result.statusCode < 300
+        ? { runtime: result.body as BotRuntimeState }
+        : { error: (result.body as { error: string }).error }),
+    });
+  }
+
+  res.json({ results });
+});
+
+app.post('/api/bots/stop-all', requireAuth, async (req: AuthedRequest, res: Response<BotBulkActionResponse>) => {
+  const bots = await prisma.bot.findMany({
+    where: { userId: (req.user as AuthUser).id },
+    orderBy: { createdAt: 'asc' },
+  });
+
+  const results = [];
+  for (const bot of bots) {
+    await stopManagedBot(bot.id);
+    results.push({
+      botId: bot.id,
+      ok: true,
+      runtime: {
+        botId: bot.id,
+        status: 'STOPPED',
+        logs: [],
+        startedAt: null,
+        lastError: null,
+        reconnectAttempts: 0,
+        lastCommandAt: null,
+      },
+    });
+  }
+
+  res.json({ results });
+});
+
+app.post('/api/bots/restart-all', requireAuth, async (req: AuthedRequest, res: Response<BotBulkActionResponse>) => {
+  const bots = await prisma.bot.findMany({
+    where: { userId: (req.user as AuthUser).id },
+    include: { server: true },
+    orderBy: { createdAt: 'asc' },
+  });
+
+  const results = [];
+  for (const bot of bots) {
+    await stopManagedBot(bot.id);
+    const result = await startManagedBot(bot.id, (req.user as AuthUser).id);
+    results.push({
+      botId: bot.id,
+      ok: result.statusCode >= 200 && result.statusCode < 300,
+      ...(result.statusCode >= 200 && result.statusCode < 300
+        ? { runtime: result.body as BotRuntimeState }
+        : { error: (result.body as { error: string }).error }),
+    });
+  }
+
+  res.json({ results });
+});
+
 app.post('/api/bots', requireAuth, async (req: AuthedRequest, res: Response<BotRecord | { error: string }>) => {
   const payload = validateBotPayload(req.body);
   if (payload.error || !payload.data) {
@@ -598,16 +734,32 @@ async function startManagedBot(
     };
   }
 
+  return launchManagedBot(botRecord, userId, 0);
+}
+
+async function launchManagedBot(
+  botRecord: BotRecordWithServer,
+  userId: string,
+  reconnectAttempts: number,
+  previousLogs: string[] = [],
+): Promise<{ statusCode: number; body: BotRuntimeState | { error: string } }> {
   const botId = botRecord.id;
   const state: BotRuntimeState = {
     botId,
     status: 'CONNECTING',
-    logs: [],
+    logs: previousLogs.slice(-30),
     startedAt: new Date().toISOString(),
     lastError: null,
+    reconnectAttempts,
+    lastCommandAt: null,
   };
 
-  appendBotLog(state, `Connecting ${botRecord.mcUsername} to ${botRecord.server.host}:${botRecord.server.port}`);
+  appendBotLog(
+    state,
+    reconnectAttempts > 0
+      ? `Reconnect attempt ${reconnectAttempts}/${maxReconnectAttempts} for ${botRecord.mcUsername}`
+      : `Connecting ${botRecord.mcUsername} to ${botRecord.server.host}:${botRecord.server.port}`,
+  );
 
   const mineflayerBot = createBot({
     host: botRecord.server.host,
@@ -617,13 +769,57 @@ async function startManagedBot(
     ...(botRecord.server.version ? { version: botRecord.server.version } : {}),
   });
 
-  function markRuntimeError(err: unknown) {
+  function scheduleReconnect(reason: string) {
+    const managed = managedBots.get(botId);
+    if (!managed || managed.stopping || state.status === 'RECONNECTING') return;
+
     clearTimeout(connectTimeout);
+    clearInterval(afkInterval);
+
+    if (managed.reconnectAttempts >= maxReconnectAttempts) {
+      state.status = 'ERROR';
+      state.lastError = reason;
+      appendBotLog(state, `Reconnect stopped after ${maxReconnectAttempts} attempt${maxReconnectAttempts === 1 ? '' : 's'}`);
+      managedBots.delete(botId);
+      void prisma.bot.update({ where: { id: botId }, data: { status: 'ERROR' } });
+      return;
+    }
+
+    managed.reconnectAttempts += 1;
+    state.status = 'RECONNECTING';
+    state.reconnectAttempts = managed.reconnectAttempts;
+    state.lastError = reason;
+    appendBotLog(state, `Reconnecting in ${Math.round(reconnectDelayMs / 1000)}s`);
+    void prisma.bot.update({ where: { id: botId }, data: { status: 'CONNECTING' } });
+
+    managed.reconnectTimeout = setTimeout(() => {
+      managedBots.delete(botId);
+      void prisma.bot.findFirst({
+        where: {
+          id: botId,
+          userId,
+        },
+        include: { server: true },
+      }).then((freshBot) => {
+        if (!freshBot) return;
+        void launchManagedBot(freshBot, userId, managed.reconnectAttempts, state.logs);
+      }).catch((err: unknown) => {
+        const message = err instanceof Error ? err.message : String(err);
+        state.status = 'ERROR';
+        state.lastError = message;
+        appendBotLog(state, `Reconnect failed: ${message}`);
+        void prisma.bot.update({ where: { id: botId }, data: { status: 'ERROR' } });
+      });
+    }, reconnectDelayMs);
+  }
+
+  function markRuntimeError(err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
-    state.status = 'ERROR';
+    if (state.status !== 'RECONNECTING') state.status = 'ERROR';
     state.lastError = message;
     appendBotLog(state, `Error: ${message}`);
     void prisma.bot.update({ where: { id: botId }, data: { status: 'ERROR' } });
+    scheduleReconnect(message);
   }
 
   const connectTimeout = setTimeout(() => {
@@ -632,11 +828,44 @@ async function startManagedBot(
     }
   }, botConnectTimeoutMs);
 
+  let afkStep = 0;
+  const afkInterval = setInterval(() => {
+    const managed = managedBots.get(botId);
+    if (!managed || managed.stopping || state.status !== 'ONLINE') return;
+
+    afkStep += 1;
+    const shouldWalk = afkStep % 2 === 0;
+    const shouldSneak = afkStep % 5 === 0;
+
+    try {
+      mineflayerBot.setControlState('forward', shouldWalk);
+      mineflayerBot.setControlState('jump', true);
+      mineflayerBot.setControlState('sneak', shouldSneak);
+
+      if (mineflayerBot.entity) {
+        mineflayerBot.look(mineflayerBot.entity.yaw + 0.35, mineflayerBot.entity.pitch, true);
+      }
+
+      setTimeout(() => {
+        if (!managedBots.has(botId)) return;
+        mineflayerBot.setControlState('forward', false);
+        mineflayerBot.setControlState('jump', false);
+        mineflayerBot.setControlState('sneak', false);
+      }, 900);
+    } catch (err: unknown) {
+      markRuntimeError(err);
+    }
+  }, afkTickMs);
+
   managedBots.set(botId, {
     bot: mineflayerBot,
     userId,
     state,
     connectTimeout,
+    afkInterval,
+    reconnectTimeout: null,
+    reconnectAttempts,
+    stopping: false,
   });
 
   await prisma.bot.update({
@@ -653,6 +882,7 @@ async function startManagedBot(
   mineflayerBot.once('spawn', () => {
     clearTimeout(connectTimeout);
     state.status = 'ONLINE';
+    state.lastError = null;
     appendBotLog(state, 'Spawned and online');
     void prisma.bot.update({ where: { id: botRecord.id }, data: { status: 'ONLINE' } });
   });
@@ -663,16 +893,26 @@ async function startManagedBot(
 
   mineflayerBot.once('end', (reason) => {
     clearTimeout(connectTimeout);
-    state.status = 'STOPPED';
-    appendBotLog(state, `Disconnected: ${reason || 'connection ended'}`);
-    managedBots.delete(botRecord.id);
-    void prisma.bot.update({ where: { id: botRecord.id }, data: { status: 'STOPPED' } });
+    clearInterval(afkInterval);
+    const managed = managedBots.get(botId);
+    const message = reason || 'connection ended';
+
+    if (managed?.stopping) {
+      state.status = 'STOPPED';
+      appendBotLog(state, `Disconnected: ${message}`);
+      managedBots.delete(botRecord.id);
+      void prisma.bot.update({ where: { id: botRecord.id }, data: { status: 'STOPPED' } });
+      return;
+    }
+
+    appendBotLog(state, `Disconnected: ${message}`);
+    scheduleReconnect(message);
   });
 
   mineflayerBot.once('error', markRuntimeError);
   mineflayerBot._client.on('error', markRuntimeError);
 
-  return { statusCode: 202, body: state };
+  return { statusCode: 202, body: getRuntimeSnapshot(state) };
 }
 
 app.post('/api/bots/:id/start', requireAuth, async (req: AuthedRequest, res: Response<BotRuntimeState | { error: string }>) => {
@@ -742,10 +982,12 @@ app.post('/api/bots/:id/command', requireAuth, async (req: AuthedRequest, res: R
 
   managed.bot.chat(payload.data.command);
   appendBotLog(managed.state, `[COMMAND] ${payload.data.command}`);
+  managed.state.lastCommandAt = new Date().toISOString();
+  await wait(commandLogDelayMs);
 
   res.json({
     ok: true,
-    runtime: managed.state,
+    runtime: getRuntimeSnapshot(managed.state, 12),
   });
 });
 
@@ -763,12 +1005,14 @@ app.get('/api/bots/:id/runtime', requireAuth, async (req: AuthedRequest, res: Re
   }
 
   const managed = managedBots.get(existing.id);
-  res.json(managed?.state || {
+  res.json(managed ? getRuntimeSnapshot(managed.state, 12) : {
     botId: existing.id,
     status: existing.status,
     logs: [],
     startedAt: null,
     lastError: null,
+    reconnectAttempts: 0,
+    lastCommandAt: null,
   });
 });
 

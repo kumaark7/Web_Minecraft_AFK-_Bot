@@ -1,6 +1,7 @@
 import { CSSProperties, FormEvent, useEffect, useMemo, useState } from 'react';
 import {
   AuthUser,
+  BotBulkActionResponse,
   BotCommandResponse,
   BotRecord,
   BotRuntimeState,
@@ -50,6 +51,8 @@ const emptyBotForm: BotForm = {
   mcUsername: '',
 };
 
+const quickCommands = ['say hello', 'tpaccept', 'home', 'spawn'];
+
 async function apiRequest<T>(path: string, options: RequestInit = {}): Promise<T> {
   const response = await fetch(`${apiBase}${path}`, {
     credentials: 'include',
@@ -77,6 +80,7 @@ export default function App() {
   const [bots, setBots] = useState<BotRecord[]>([]);
   const [runtimeStates, setRuntimeStates] = useState<Record<string, BotRuntimeState>>({});
   const [commandForms, setCommandForms] = useState<Record<string, string>>({});
+  const [commandHistory, setCommandHistory] = useState<Record<string, string[]>>({});
   const [authMode, setAuthMode] = useState<AuthMode>('login');
   const [authForm, setAuthForm] = useState<AuthForm>(emptyAuthForm);
   const [serverForm, setServerForm] = useState<ServerForm>(emptyServerForm);
@@ -103,6 +107,17 @@ export default function App() {
     setRuntimeStates((current) => ({ ...current, [botId]: data }));
   }
 
+  async function loadBotRuntimes() {
+    const data = await apiRequest<BotRuntimeState[]>('/bots/runtimes');
+    setRuntimeStates((current) => data.reduce<Record<string, BotRuntimeState>>((next, runtime) => {
+      next[runtime.botId] = {
+        ...runtime,
+        logs: runtime.logs.length > 0 ? runtime.logs : current[runtime.botId]?.logs || [],
+      };
+      return next;
+    }, { ...current }));
+  }
+
   useEffect(() => {
     async function loadInitialState() {
       try {
@@ -126,6 +141,16 @@ export default function App() {
 
     void loadInitialState();
   }, []);
+
+  useEffect(() => {
+    if (!user || bots.length === 0) return undefined;
+
+    const intervalId = window.setInterval(() => {
+      void loadBotRuntimes().catch(() => undefined);
+    }, 5000);
+
+    return () => window.clearInterval(intervalId);
+  }, [user, bots.length]);
 
   async function handleAuthSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -161,6 +186,7 @@ export default function App() {
     setBots([]);
     setRuntimeStates({});
     setCommandForms({});
+    setCommandHistory({});
     setEditingId(null);
     setServerForm(emptyServerForm);
     setBotForm(emptyBotForm);
@@ -244,6 +270,27 @@ export default function App() {
     }
   }
 
+  async function handleBulkBotAction(action: 'start-all' | 'stop-all' | 'restart-all') {
+    setError(null);
+    setMessage(null);
+
+    try {
+      const response = await apiRequest<BotBulkActionResponse>(`/bots/${action}`, { method: 'POST' });
+      setRuntimeStates((current) => response.results.reduce<Record<string, BotRuntimeState>>((next, result) => {
+        if (result.runtime) next[result.botId] = result.runtime;
+        return next;
+      }, { ...current }));
+      await loadBots();
+
+      const failed = response.results.filter((result) => !result.ok);
+      setMessage(failed.length > 0
+        ? `${response.results.length - failed.length} bot action${response.results.length - failed.length === 1 ? '' : 's'} completed, ${failed.length} failed.`
+        : `${response.results.length} bot action${response.results.length === 1 ? '' : 's'} completed.`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Unable to run bulk bot action');
+    }
+  }
+
   async function handleStopBot(botId: string) {
     setError(null);
     setMessage(null);
@@ -288,6 +335,11 @@ export default function App() {
         delete next[botId];
         return next;
       });
+      setCommandHistory((current) => {
+        const next = { ...current };
+        delete next[botId];
+        return next;
+      });
       await loadBots();
       setMessage('Bot deleted.');
     } catch (err) {
@@ -298,14 +350,19 @@ export default function App() {
   async function handleSendCommand(botId: string) {
     setError(null);
     setMessage(null);
+    const command = commandForms[botId] || '';
 
     try {
       const response = await apiRequest<BotCommandResponse>(`/bots/${botId}/command`, {
         method: 'POST',
-        body: JSON.stringify({ command: commandForms[botId] || '' }),
+        body: JSON.stringify({ command }),
       });
       setRuntimeStates((current) => ({ ...current, [botId]: response.runtime }));
       setCommandForms((current) => ({ ...current, [botId]: '' }));
+      setCommandHistory((current) => ({
+        ...current,
+        [botId]: [command, ...(current[botId] || []).filter((entry) => entry !== command)].slice(0, 5),
+      }));
       setMessage('Command sent.');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unable to send command');
@@ -506,7 +563,18 @@ export default function App() {
             <div style={styles.panelHeader}>
               <div>
                 <h2 style={styles.panelTitle}>Bots</h2>
-                <p style={styles.muted}>Single-bot engine for offline-mode servers</p>
+                <p style={styles.muted}>AFK automation and multi-bot controls for offline-mode servers</p>
+              </div>
+              <div style={styles.actions}>
+                <button style={styles.primaryButton} type="button" onClick={() => void handleBulkBotAction('start-all')}>
+                  Start All
+                </button>
+                <button style={styles.secondaryButton} type="button" onClick={() => void handleBulkBotAction('restart-all')}>
+                  Restart All
+                </button>
+                <button style={styles.secondaryButton} type="button" onClick={() => void handleBulkBotAction('stop-all')}>
+                  Stop All
+                </button>
               </div>
             </div>
 
@@ -568,11 +636,40 @@ export default function App() {
                         {bot.mcUsername} → {bot.server.name}
                       </p>
                       <p style={styles.tag}>{runtime?.status || bot.status}</p>
+                      {typeof runtime?.reconnectAttempts === 'number' && runtime.reconnectAttempts > 0 && (
+                        <p style={styles.muted}>Reconnect attempts: {runtime.reconnectAttempts}</p>
+                      )}
                       {runtime?.lastError && <p style={styles.errorText}>{runtime.lastError}</p>}
                       {runtime && runtime.logs.length > 0 && (
                         <pre style={styles.logBox}>
                           {runtime.logs.slice(-5).join('\n')}
                         </pre>
+                      )}
+                      <div style={styles.quickCommandRow}>
+                        {quickCommands.map((command) => (
+                          <button
+                            key={command}
+                            style={styles.miniButton}
+                            type="button"
+                            onClick={() => setCommandForms({ ...commandForms, [bot.id]: command })}
+                          >
+                            {command}
+                          </button>
+                        ))}
+                      </div>
+                      {(commandHistory[bot.id] || []).length > 0 && (
+                        <div style={styles.quickCommandRow}>
+                          {(commandHistory[bot.id] || []).map((command) => (
+                            <button
+                              key={command}
+                              style={styles.historyButton}
+                              type="button"
+                              onClick={() => setCommandForms({ ...commandForms, [bot.id]: command })}
+                            >
+                              {command}
+                            </button>
+                          ))}
+                        </div>
                       )}
                       <div style={styles.commandRow}>
                         <input
@@ -723,6 +820,31 @@ const styles: Record<string, CSSProperties> = {
     gap: '8px',
     marginTop: '10px',
     maxWidth: '520px',
+  },
+  quickCommandRow: {
+    display: 'flex',
+    flexWrap: 'wrap',
+    gap: '8px',
+    marginTop: '10px',
+  },
+  miniButton: {
+    border: '1px solid #cfd7e6',
+    borderRadius: '6px',
+    background: '#f7f8fb',
+    color: '#1f2a44',
+    padding: '6px 8px',
+    fontSize: '12px',
+    fontWeight: 700,
+    cursor: 'pointer',
+  },
+  historyButton: {
+    border: '1px solid #b9c7da',
+    borderRadius: '6px',
+    background: '#ffffff',
+    color: '#536179',
+    padding: '6px 8px',
+    fontSize: '12px',
+    cursor: 'pointer',
   },
   errorText: {
     color: '#b42318',

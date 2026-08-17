@@ -69,6 +69,8 @@ export interface BotRuntimeState {
   logs: string[];
   startedAt: string | null;
   lastError: string | null;
+  reconnectAttempts?: number;
+  lastCommandAt?: string | null;
 }
 
 export interface BotCommandPayload {
@@ -78,4 +80,15 @@ export interface BotCommandPayload {
 export interface BotCommandResponse {
   ok: true;
   runtime: BotRuntimeState;
+}
+
+export interface BotBulkActionResult {
+  botId: string;
+  ok: boolean;
+  runtime?: BotRuntimeState;
+  error?: string;
+}
+
+export interface BotBulkActionResponse {
+  results: BotBulkActionResult[];
 }
