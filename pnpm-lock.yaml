@@ -52,7 +52,7 @@ importers:
         version: 4.22.2(supports-color@8.1.1)
       mineflayer:
         specifier: ^4.37.1
-        version: 4.37.1
+        version: 4.37.1(supports-color@8.1.1)
     devDependencies:
       '@types/cors':
         specifier: ^2.8.17
@@ -75,12 +75,18 @@ importers:
       '@larry/shared':
         specifier: workspace:*
         version: link:../../packages/shared
+      lucide-react:
+        specifier: ^0.468.0
+        version: 0.468.0(react@18.3.1)
       react:
         specifier: ^18.2.0
         version: 18.3.1
       react-dom:
         specifier: ^18.2.0
         version: 18.3.1(react@18.3.1)
+      react-router-dom:
+        specifier: ^6.23.1
+        version: 6.30.4(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
     devDependencies:
       '@types/react':
         specifier: ^18.2.66
@@ -600,6 +606,10 @@ packages:
 
   '@prisma/get-platform@5.22.0':
     resolution: {integrity: sha512-pHhpQdr1UPFpt+zFfnPazhulaZYCUqeIcPpJViYoq9R+D/yw4fjE+CtnsnKzPYm0ddUbeXUzjGVGIRVgPDCk4Q==}
+
+  '@remix-run/router@1.23.3':
+    resolution: {integrity: sha512-4An71tdz9X8+3sI4Qqqd2LWd9vS39J7sqd9EU4Scw7TJE/qB10Flv/UuqbPVgfQV9XoK8Np6jNquZitnZq5i+Q==}
+    engines: {node: '>=14.0.0'}
 
   '@rolldown/pluginutils@1.0.0-beta.27':
     resolution: {integrity: sha512-+d0F4MKMCbeVUJwG96uQ4SgAznZNSq93I3V+9NHA4OpvqG8mRCpGdKmK8l/dl02h2CCDHwW2FqilnTyDcAnqjA==}
@@ -1695,6 +1705,11 @@ packages:
   lru-cache@5.1.1:
     resolution: {integrity: sha512-KpNARQA3Iwv+jTA0utUVVbrh+Jlrr1Fv0e56GGzAFOXN7dk/FviaDW8LHmK52DlcH4WP2n6gI8vN1aesBFgo9w==}
 
+  lucide-react@0.468.0:
+    resolution: {integrity: sha512-6koYRhnM2N0GGZIdXzSeiNwguv1gt/FAjZOiPl76roBi3xKEXa4WmfpxgQwTTL4KipXjefrnf3oV4IsYhi4JFA==}
+    peerDependencies:
+      react: ^16.5.1 || ^17.0.0 || ^18.0.0 || ^19.0.0-rc
+
   macaddress@0.5.4:
     resolution: {integrity: sha512-i8xVWoUjj2woYU8kbpQby86Kq7uF7xl2brtKREXUBWpfgqx1fKXEeYzDiVMVxA/IufC1d3xxwJRHtFCX+9IspA==}
 
@@ -2017,6 +2032,19 @@ packages:
   react-refresh@0.17.0:
     resolution: {integrity: sha512-z6F7K9bV85EfseRCp2bzrpyQ0Gkw1uLoCel9XBVWPg/TjRj94SkJzUTGfOa4bs7iJvBWtQG0Wq7wnI0syw3EBQ==}
     engines: {node: '>=0.10.0'}
+
+  react-router-dom@6.30.4:
+    resolution: {integrity: sha512-q4HvNl+mmDdkS0g+MqiBZNteQJCuimWoOyHMy4T/RQLAn9Z29+E91QXRaxOujeMl2HTzRSS0KFPd7lxX3PjV0Q==}
+    engines: {node: '>=14.0.0'}
+    peerDependencies:
+      react: '>=16.8'
+      react-dom: '>=16.8'
+
+  react-router@6.30.4:
+    resolution: {integrity: sha512-SVUsDe+DybHM/WmYKIVYhZh1o5Dcuf16yM6WjG02Q9XVFMZIJyHYhwrr6bFBXZkVP6z69kNkMyBCujt8FaFLJA==}
+    engines: {node: '>=14.0.0'}
+    peerDependencies:
+      react: '>=16.8'
 
   react@18.3.1:
     resolution: {integrity: sha512-wS+hAgJShR0KhEvPJArfuPVN1+Hz1t0Y6n5jLrGQbkb4urgPE/0Rve+1kMB1v/oWgHgm4WIcV+i7F2pTVj+2iQ==}
@@ -2800,6 +2828,8 @@ snapshots:
   '@prisma/get-platform@5.22.0':
     dependencies:
       '@prisma/debug': 5.22.0
+
+  '@remix-run/router@1.23.3': {}
 
   '@rolldown/pluginutils@1.0.0-beta.27': {}
 
@@ -4128,6 +4158,10 @@ snapshots:
     dependencies:
       yallist: 3.1.1
 
+  lucide-react@0.468.0(react@18.3.1):
+    dependencies:
+      react: 18.3.1
+
   macaddress@0.5.4: {}
 
   math-intrinsics@1.1.0: {}
@@ -4157,7 +4191,7 @@ snapshots:
 
   minecraft-folder-path@1.2.0: {}
 
-  minecraft-protocol@1.67.0:
+  minecraft-protocol@1.67.0(supports-color@8.1.1):
     dependencies:
       '@types/node-rsa': 1.1.4
       '@types/readable-stream': 4.0.24
@@ -4170,10 +4204,10 @@ snapshots:
       minecraft-folder-path: 1.2.0
       node-fetch: 2.7.0
       node-rsa: 0.4.2
-      prismarine-auth: 3.1.1
+      prismarine-auth: 3.1.1(supports-color@8.1.1)
       prismarine-chat: 1.13.0
       prismarine-nbt: 2.8.0
-      prismarine-realms: 1.6.0
+      prismarine-realms: 1.6.0(supports-color@8.1.1)
       protodef: 1.19.0
       readable-stream: 4.7.0
       uuid-1345: 1.0.2
@@ -4182,10 +4216,10 @@ snapshots:
       - encoding
       - supports-color
 
-  mineflayer@4.37.1:
+  mineflayer@4.37.1(supports-color@8.1.1):
     dependencies:
       minecraft-data: 3.113.2
-      minecraft-protocol: 1.67.0
+      minecraft-protocol: 1.67.0(supports-color@8.1.1)
       mojangson: 2.0.4
       prismarine-biome: 1.4.0(prismarine-registry@1.12.0)
       prismarine-block: 1.23.0
@@ -4363,7 +4397,7 @@ snapshots:
     optionalDependencies:
       fsevents: 2.3.3
 
-  prismarine-auth@3.1.1:
+  prismarine-auth@3.1.1(supports-color@8.1.1):
     dependencies:
       '@azure/msal-node': 2.16.3
       '@xboxreplay/xboxlive-auth': 5.1.0
@@ -4434,7 +4468,7 @@ snapshots:
       prismarine-nbt: 2.8.0
       vec3: 0.2.0
 
-  prismarine-realms@1.6.0:
+  prismarine-realms@1.6.0(supports-color@8.1.1):
     dependencies:
       debug: 4.4.3(supports-color@8.1.1)
       node-fetch: 2.7.0
@@ -4521,6 +4555,18 @@ snapshots:
   react-is@16.13.1: {}
 
   react-refresh@0.17.0: {}
+
+  react-router-dom@6.30.4(react-dom@18.3.1(react@18.3.1))(react@18.3.1):
+    dependencies:
+      '@remix-run/router': 1.23.3
+      react: 18.3.1
+      react-dom: 18.3.1(react@18.3.1)
+      react-router: 6.30.4(react@18.3.1)
+
+  react-router@6.30.4(react@18.3.1):
+    dependencies:
+      '@remix-run/router': 1.23.3
+      react: 18.3.1
 
   react@18.3.1:
     dependencies:
