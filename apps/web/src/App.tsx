@@ -1,5 +1,12 @@
 import { CSSProperties, FormEvent, useEffect, useMemo, useState } from 'react';
-import { AuthUser, BotRecord, BotRuntimeState, HealthResponse, ServerRecord } from '@larry/shared';
+import {
+  AuthUser,
+  BotCommandResponse,
+  BotRecord,
+  BotRuntimeState,
+  HealthResponse,
+  ServerRecord,
+} from '@larry/shared';
 
 const apiBase = 'http://localhost:3001/api';
 
@@ -69,6 +76,7 @@ export default function App() {
   const [servers, setServers] = useState<ServerRecord[]>([]);
   const [bots, setBots] = useState<BotRecord[]>([]);
   const [runtimeStates, setRuntimeStates] = useState<Record<string, BotRuntimeState>>({});
+  const [commandForms, setCommandForms] = useState<Record<string, string>>({});
   const [authMode, setAuthMode] = useState<AuthMode>('login');
   const [authForm, setAuthForm] = useState<AuthForm>(emptyAuthForm);
   const [serverForm, setServerForm] = useState<ServerForm>(emptyServerForm);
@@ -152,6 +160,7 @@ export default function App() {
     setServers([]);
     setBots([]);
     setRuntimeStates({});
+    setCommandForms({});
     setEditingId(null);
     setServerForm(emptyServerForm);
     setBotForm(emptyBotForm);
@@ -246,6 +255,60 @@ export default function App() {
       setMessage('Bot stopped.');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unable to stop bot');
+    }
+  }
+
+  async function handleRestartBot(botId: string) {
+    setError(null);
+    setMessage(null);
+
+    try {
+      const runtime = await apiRequest<BotRuntimeState>(`/bots/${botId}/restart`, { method: 'POST' });
+      setRuntimeStates((current) => ({ ...current, [botId]: runtime }));
+      await loadBots();
+      setMessage('Bot restart requested.');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Unable to restart bot');
+    }
+  }
+
+  async function handleDeleteBot(botId: string) {
+    setError(null);
+    setMessage(null);
+
+    try {
+      await apiRequest<{ ok: true }>(`/bots/${botId}`, { method: 'DELETE' });
+      setRuntimeStates((current) => {
+        const next = { ...current };
+        delete next[botId];
+        return next;
+      });
+      setCommandForms((current) => {
+        const next = { ...current };
+        delete next[botId];
+        return next;
+      });
+      await loadBots();
+      setMessage('Bot deleted.');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Unable to delete bot');
+    }
+  }
+
+  async function handleSendCommand(botId: string) {
+    setError(null);
+    setMessage(null);
+
+    try {
+      const response = await apiRequest<BotCommandResponse>(`/bots/${botId}/command`, {
+        method: 'POST',
+        body: JSON.stringify({ command: commandForms[botId] || '' }),
+      });
+      setRuntimeStates((current) => ({ ...current, [botId]: response.runtime }));
+      setCommandForms((current) => ({ ...current, [botId]: '' }));
+      setMessage('Command sent.');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Unable to send command');
     }
   }
 
@@ -511,16 +574,33 @@ export default function App() {
                           {runtime.logs.slice(-5).join('\n')}
                         </pre>
                       )}
+                      <div style={styles.commandRow}>
+                        <input
+                          style={styles.input}
+                          placeholder="say hello"
+                          value={commandForms[bot.id] || ''}
+                          onChange={(event) => setCommandForms({ ...commandForms, [bot.id]: event.target.value })}
+                        />
+                        <button style={styles.secondaryButton} type="button" onClick={() => void handleSendCommand(bot.id)}>
+                          Send
+                        </button>
+                      </div>
                     </div>
                     <div style={styles.actions}>
                       <button style={styles.primaryButton} type="button" onClick={() => void handleStartBot(bot.id)}>
                         Start
+                      </button>
+                      <button style={styles.secondaryButton} type="button" onClick={() => void handleRestartBot(bot.id)}>
+                        Restart
                       </button>
                       <button style={styles.secondaryButton} type="button" onClick={() => void handleStopBot(bot.id)}>
                         Stop
                       </button>
                       <button style={styles.secondaryButton} type="button" onClick={() => void loadBotRuntime(bot.id)}>
                         Refresh
+                      </button>
+                      <button style={styles.dangerButton} type="button" onClick={() => void handleDeleteBot(bot.id)}>
+                        Delete
                       </button>
                     </div>
                   </article>
@@ -636,6 +716,13 @@ const styles: Record<string, CSSProperties> = {
     padding: '10px',
     color: '#344054',
     fontSize: '12px',
+  },
+  commandRow: {
+    display: 'grid',
+    gridTemplateColumns: 'minmax(180px, 1fr) auto',
+    gap: '8px',
+    marginTop: '10px',
+    maxWidth: '520px',
   },
   errorText: {
     color: '#b42318',

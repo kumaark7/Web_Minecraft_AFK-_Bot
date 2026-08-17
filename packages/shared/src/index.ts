@@ -70,3 +70,12 @@ export interface BotRuntimeState {
   startedAt: string | null;
   lastError: string | null;
 }
+
+export interface BotCommandPayload {
+  command: string;
+}
+
+export interface BotCommandResponse {
+  ok: true;
+  runtime: BotRuntimeState;
+}
