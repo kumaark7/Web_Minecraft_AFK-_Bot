@@ -2,6 +2,7 @@ import express, { Request, Response } from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import { randomBytes, scrypt as scryptCallback, timingSafeEqual, createHmac } from 'crypto';
+import { resolveSrv } from 'dns/promises';
 import { promisify } from 'util';
 import { createBot, Bot as MineflayerBot } from 'mineflayer';
 import {
@@ -320,6 +321,45 @@ function getRuntimeSnapshot(state: BotRuntimeState, logLimit = 50): BotRuntimeSt
     ...state,
     logs: state.logs.slice(-logLimit),
   };
+}
+
+function formatKickReason(reason: unknown): string {
+  if (typeof reason === 'string') {
+    try {
+      const parsed = JSON.parse(reason) as { text?: string; translate?: string };
+      return parsed.text || parsed.translate || reason;
+    } catch {
+      return reason;
+    }
+  }
+
+  if (reason && typeof reason === 'object') {
+    const parsed = reason as { text?: string; translate?: string };
+    return parsed.text || parsed.translate || JSON.stringify(reason);
+  }
+
+  return String(reason);
+}
+
+async function resolveMinecraftEndpoint(host: string, port: number): Promise<{ host: string; port: number; srvResolved: boolean }> {
+  if (port !== 25565) {
+    return { host, port, srvResolved: false };
+  }
+
+  try {
+    const [record] = await resolveSrv(`_minecraft._tcp.${host}`);
+    if (!record?.name || !record.port) {
+      return { host, port, srvResolved: false };
+    }
+
+    return {
+      host: record.name.replace(/\.$/, ''),
+      port: record.port,
+      srvResolved: true,
+    };
+  } catch {
+    return { host, port, srvResolved: false };
+  }
 }
 
 async function stopManagedBot(botId: string, status = 'STOPPED') {
@@ -754,16 +794,21 @@ async function launchManagedBot(
     lastCommandAt: null,
   };
 
+  const endpoint = await resolveMinecraftEndpoint(botRecord.server.host, botRecord.server.port);
+
   appendBotLog(
     state,
     reconnectAttempts > 0
       ? `Reconnect attempt ${reconnectAttempts}/${maxReconnectAttempts} for ${botRecord.mcUsername}`
       : `Connecting ${botRecord.mcUsername} to ${botRecord.server.host}:${botRecord.server.port}`,
   );
+  if (endpoint.srvResolved) {
+    appendBotLog(state, `Resolved Minecraft SRV to ${endpoint.host}:${endpoint.port}`);
+  }
 
   const mineflayerBot = createBot({
-    host: botRecord.server.host,
-    port: botRecord.server.port,
+    host: endpoint.host,
+    port: endpoint.port,
     username: botRecord.mcUsername,
     auth: 'offline',
     ...(botRecord.server.version ? { version: botRecord.server.version } : {}),
@@ -889,6 +934,10 @@ async function launchManagedBot(
 
   mineflayerBot.on('message', (message) => {
     appendBotLog(state, `[CHAT] ${message.toString()}`);
+  });
+
+  mineflayerBot.once('kicked', (reason) => {
+    markRuntimeError(new Error(`Kicked: ${formatKickReason(reason)}`));
   });
 
   mineflayerBot.once('end', (reason) => {
