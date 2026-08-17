@@ -9,7 +9,7 @@ import {
   ServerRecord,
 } from '@larry/shared';
 
-const apiBase = 'http://localhost:3001/api';
+const apiBase = import.meta.env.VITE_API_BASE || (import.meta.env.DEV ? 'http://localhost:3001/api' : '/api');
 
 type AuthMode = 'login' | 'register';
 
