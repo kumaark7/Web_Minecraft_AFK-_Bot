@@ -71,6 +71,7 @@ export interface BotRuntimeState {
   lastError: string | null;
   reconnectAttempts?: number;
   lastCommandAt?: string | null;
+  antiAfkEnabled?: boolean;
 }
 
 export interface BotCommandPayload {
@@ -78,6 +79,15 @@ export interface BotCommandPayload {
 }
 
 export interface BotCommandResponse {
+  ok: true;
+  runtime: BotRuntimeState;
+}
+
+export interface BotAntiAfkPayload {
+  enabled: boolean;
+}
+
+export interface BotAntiAfkResponse {
   ok: true;
   runtime: BotRuntimeState;
 }

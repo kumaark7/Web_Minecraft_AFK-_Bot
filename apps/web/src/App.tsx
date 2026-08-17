@@ -1,6 +1,7 @@
 import { CSSProperties, FormEvent, useEffect, useMemo, useState } from 'react';
 import {
   AuthUser,
+  BotAntiAfkResponse,
   BotBulkActionResponse,
   BotCommandResponse,
   BotRecord,
@@ -316,6 +317,24 @@ export default function App() {
       setMessage('Bot restart requested.');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unable to restart bot');
+    }
+  }
+
+  async function handleToggleAntiAfk(botId: string) {
+    setError(null);
+    setMessage(null);
+
+    const enabled = !(runtimeStates[botId]?.antiAfkEnabled || false);
+
+    try {
+      const response = await apiRequest<BotAntiAfkResponse>(`/bots/${botId}/anti-afk`, {
+        method: 'POST',
+        body: JSON.stringify({ enabled }),
+      });
+      setRuntimeStates((current) => ({ ...current, [botId]: response.runtime }));
+      setMessage(`Anti AFK ${enabled ? 'enabled' : 'disabled'}.`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Unable to change Anti AFK');
     }
   }
 
@@ -636,6 +655,9 @@ export default function App() {
                         {bot.mcUsername} → {bot.server.name}
                       </p>
                       <p style={styles.tag}>{runtime?.status || bot.status}</p>
+                      <p style={runtime?.antiAfkEnabled ? styles.enabledText : styles.muted}>
+                        Anti AFK {runtime?.antiAfkEnabled ? 'ON' : 'OFF'}
+                      </p>
                       {typeof runtime?.reconnectAttempts === 'number' && runtime.reconnectAttempts > 0 && (
                         <p style={styles.muted}>Reconnect attempts: {runtime.reconnectAttempts}</p>
                       )}
@@ -689,6 +711,13 @@ export default function App() {
                       </button>
                       <button style={styles.secondaryButton} type="button" onClick={() => void handleRestartBot(bot.id)}>
                         Restart
+                      </button>
+                      <button
+                        style={runtime?.antiAfkEnabled ? styles.activeButton : styles.secondaryButton}
+                        type="button"
+                        onClick={() => void handleToggleAntiAfk(bot.id)}
+                      >
+                        Anti AFK {runtime?.antiAfkEnabled ? 'On' : 'Off'}
                       </button>
                       <button style={styles.secondaryButton} type="button" onClick={() => void handleStopBot(bot.id)}>
                         Stop
@@ -851,6 +880,12 @@ const styles: Record<string, CSSProperties> = {
     fontSize: '13px',
     margin: '8px 0',
   },
+  enabledText: {
+    margin: '4px 0 0',
+    color: '#027a48',
+    fontSize: '14px',
+    fontWeight: 700,
+  },
   actions: {
     display: 'flex',
     alignItems: 'center',
@@ -871,6 +906,15 @@ const styles: Record<string, CSSProperties> = {
     borderRadius: '6px',
     background: '#ffffff',
     color: '#1f2a44',
+    padding: '9px 12px',
+    fontWeight: 700,
+    cursor: 'pointer',
+  },
+  activeButton: {
+    border: '1px solid #12b76a',
+    borderRadius: '6px',
+    background: '#ecfdf3',
+    color: '#027a48',
     padding: '9px 12px',
     fontWeight: 700,
     cursor: 'pointer',

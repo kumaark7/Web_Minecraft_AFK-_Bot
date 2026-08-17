@@ -8,6 +8,8 @@ import { createBot, Bot as MineflayerBot } from 'mineflayer';
 import {
   AuthResponse,
   AuthUser,
+  BotAntiAfkPayload,
+  BotAntiAfkResponse,
   BotBulkActionResponse,
   BotCommandPayload,
   BotCommandResponse,
@@ -62,6 +64,8 @@ interface ManagedBot {
   reconnectTimeout: NodeJS.Timeout | null;
   reconnectAttempts: number;
   stopping: boolean;
+  antiAfkEnabled: boolean;
+  eating: boolean;
 }
 
 type BotRecordWithServer = {
@@ -308,6 +312,16 @@ function validateBotCommandPayload(body: unknown): { data?: BotCommandPayload; e
   return { data: { command } };
 }
 
+function validateBotAntiAfkPayload(body: unknown): { data?: BotAntiAfkPayload; error?: string } {
+  const input = body as Record<string, unknown>;
+
+  if (typeof input.enabled !== 'boolean') {
+    return { error: 'Anti AFK enabled must be true or false' };
+  }
+
+  return { data: { enabled: input.enabled } };
+}
+
 function appendBotLog(state: BotRuntimeState, message: string) {
   state.logs = [
     ...state.logs.slice(-49),
@@ -324,6 +338,42 @@ function getRuntimeSnapshot(state: BotRuntimeState, logLimit = 50): BotRuntimeSt
     ...state,
     logs: state.logs.slice(-logLimit),
   };
+}
+
+function clearMovement(bot: MineflayerBot) {
+  bot.setControlState('forward', false);
+  bot.setControlState('back', false);
+  bot.setControlState('left', false);
+  bot.setControlState('right', false);
+  bot.setControlState('jump', false);
+  bot.setControlState('sneak', false);
+}
+
+function isFoodItem(itemName: string): boolean {
+  return /(?:apple|bread|carrot|potato|beef|porkchop|chicken|mutton|rabbit|cod|salmon|cookie|melon|stew|soup|pie|berries)/.test(itemName);
+}
+
+async function tryEatFood(managed: ManagedBot) {
+  if (managed.eating || managed.state.status !== 'ONLINE') return;
+  if (typeof managed.bot.food === 'number' && managed.bot.food > 18) return;
+
+  const food = managed.bot.inventory.items().find((item) => isFoodItem(item.name));
+  if (!food) return;
+
+  managed.eating = true;
+  try {
+    await managed.bot.equip(food, 'hand');
+    managed.bot.activateItem();
+    appendBotLog(managed.state, `Eating ${food.displayName || food.name}`);
+    setTimeout(() => {
+      if (!managedBots.has(managed.state.botId)) return;
+      managed.bot.deactivateItem();
+      managed.eating = false;
+    }, 1800);
+  } catch (err: unknown) {
+    managed.eating = false;
+    appendBotLog(managed.state, `Unable to eat food: ${err instanceof Error ? err.message : String(err)}`);
+  }
 }
 
 function formatKickReason(reason: unknown): string {
@@ -610,6 +660,7 @@ app.get('/api/bots/runtimes', requireAuth, async (req: AuthedRequest, res: Respo
       lastError: null,
       reconnectAttempts: 0,
       lastCommandAt: null,
+      antiAfkEnabled: false,
     };
   }));
 });
@@ -656,6 +707,7 @@ app.post('/api/bots/stop-all', requireAuth, async (req: AuthedRequest, res: Resp
         lastError: null,
         reconnectAttempts: 0,
         lastCommandAt: null,
+        antiAfkEnabled: false,
       },
     });
   }
@@ -785,6 +837,7 @@ async function launchManagedBot(
   userId: string,
   reconnectAttempts: number,
   previousLogs: string[] = [],
+  antiAfkEnabled = false,
 ): Promise<{ statusCode: number; body: BotRuntimeState | { error: string } }> {
   const botId = botRecord.id;
   const state: BotRuntimeState = {
@@ -795,6 +848,7 @@ async function launchManagedBot(
     lastError: null,
     reconnectAttempts,
     lastCommandAt: null,
+    antiAfkEnabled,
   };
 
   const endpoint = await resolveMinecraftEndpoint(botRecord.server.host, botRecord.server.port);
@@ -850,7 +904,7 @@ async function launchManagedBot(
         include: { server: true },
       }).then((freshBot) => {
         if (!freshBot) return;
-        void launchManagedBot(freshBot, userId, managed.reconnectAttempts, state.logs);
+        void launchManagedBot(freshBot, userId, managed.reconnectAttempts, state.logs, managed.antiAfkEnabled);
       }).catch((err: unknown) => {
         const message = err instanceof Error ? err.message : String(err);
         state.status = 'ERROR';
@@ -882,10 +936,21 @@ async function launchManagedBot(
     if (!managed || managed.stopping || state.status !== 'ONLINE') return;
 
     afkStep += 1;
+
+    if (!managed.antiAfkEnabled) {
+      clearMovement(mineflayerBot);
+      void tryEatFood(managed);
+      return;
+    }
+
     const shouldWalk = afkStep % 2 === 0;
     const shouldSneak = afkStep % 5 === 0;
 
     try {
+      if (afkStep % 5 === 0) {
+        void tryEatFood(managed);
+      }
+
       mineflayerBot.setControlState('forward', shouldWalk);
       mineflayerBot.setControlState('jump', true);
       mineflayerBot.setControlState('sneak', shouldSneak);
@@ -914,6 +979,8 @@ async function launchManagedBot(
     reconnectTimeout: null,
     reconnectAttempts,
     stopping: false,
+    antiAfkEnabled,
+    eating: false,
   });
 
   await prisma.bot.update({
@@ -1007,6 +1074,45 @@ app.post('/api/bots/:id/stop', requireAuth, async (req: AuthedRequest, res: Resp
   res.json({ ok: true });
 });
 
+app.post('/api/bots/:id/anti-afk', requireAuth, async (req: AuthedRequest, res: Response<BotAntiAfkResponse | { error: string }>) => {
+  const payload = validateBotAntiAfkPayload(req.body);
+  if (payload.error || !payload.data) {
+    res.status(400).json({ error: payload.error || 'Invalid Anti AFK payload' });
+    return;
+  }
+
+  const existing = await prisma.bot.findFirst({
+    where: {
+      id: req.params.id,
+      userId: (req.user as AuthUser).id,
+    },
+  });
+
+  if (!existing) {
+    res.status(404).json({ error: 'Bot not found' });
+    return;
+  }
+
+  const managed = managedBots.get(existing.id);
+  if (!managed) {
+    res.status(409).json({ error: 'Bot must be running before changing Anti AFK' });
+    return;
+  }
+
+  managed.antiAfkEnabled = payload.data.enabled;
+  managed.state.antiAfkEnabled = payload.data.enabled;
+
+  if (!payload.data.enabled) {
+    clearMovement(managed.bot);
+  }
+
+  appendBotLog(managed.state, `Anti AFK ${payload.data.enabled ? 'enabled' : 'disabled'}`);
+  res.json({
+    ok: true,
+    runtime: getRuntimeSnapshot(managed.state, 12),
+  });
+});
+
 app.post('/api/bots/:id/command', requireAuth, async (req: AuthedRequest, res: Response<BotCommandResponse | { error: string }>) => {
   const payload = validateBotCommandPayload(req.body);
   if (payload.error || !payload.data) {
@@ -1065,6 +1171,7 @@ app.get('/api/bots/:id/runtime', requireAuth, async (req: AuthedRequest, res: Re
     lastError: null,
     reconnectAttempts: 0,
     lastCommandAt: null,
+    antiAfkEnabled: false,
   });
 });
 
