@@ -382,7 +382,7 @@ export default function App() {
                   Version
                   <input
                     style={styles.input}
-                    placeholder="Optional"
+                    placeholder="Optional, e.g. 1.20.4"
                     value={serverForm.version}
                     onChange={(event) => setServerForm({ ...serverForm, version: event.target.value })}
                   />

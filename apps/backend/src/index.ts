@@ -192,6 +192,10 @@ function getString(value: unknown): string {
   return typeof value === 'string' ? value.trim() : '';
 }
 
+function isValidMinecraftVersion(version: string): boolean {
+  return /^1\.\d+(?:\.\d+)?$/.test(version);
+}
+
 function validateAuthInput(
   body: unknown,
   mode: 'register' | 'login'
@@ -220,6 +224,9 @@ function validateServerPayload(body: unknown): { data?: ServerPayload; error?: s
   if (name.length < 2) return { error: 'Server name must be at least 2 characters' };
   if (!host) return { error: 'Server host is required' };
   if (port < 1 || port > 65535) return { error: 'Server port must be between 1 and 65535' };
+  if (version && !isValidMinecraftVersion(version)) {
+    return { error: 'Minecraft version must be blank or look like 1.20.4' };
+  }
   if (authMode !== 'offline') return { error: 'Only offline server mode is supported' };
 
   return {
@@ -285,6 +292,19 @@ async function stopManagedBot(botId: string, status = 'STOPPED') {
   await prisma.bot.update({
     where: { id: botId },
     data: { status },
+  });
+}
+
+async function resetRuntimeStatuses() {
+  await prisma.bot.updateMany({
+    where: {
+      status: {
+        in: ['CONNECTING', 'LOGIN', 'ONLINE'],
+      },
+    },
+    data: {
+      status: 'STOPPED',
+    },
   });
 }
 
@@ -526,6 +546,13 @@ app.post('/api/bots/:id/start', requireAuth, async (req: AuthedRequest, res: Res
     return;
   }
 
+  if (botRecord.server.version && !isValidMinecraftVersion(botRecord.server.version)) {
+    res.status(400).json({
+      error: 'Saved server has an invalid Minecraft version. Edit the server and leave version blank or use a value like 1.20.4',
+    });
+    return;
+  }
+
   const botId = botRecord.id;
   const state: BotRuntimeState = {
     botId,
@@ -645,6 +672,7 @@ app.get('/api/bots/:id/runtime', requireAuth, async (req: AuthedRequest, res: Re
 async function startServer() {
   try {
     await prisma.$connect();
+    await resetRuntimeStatuses();
 
     console.log(
       '[Backend] Successfully connected to PostgreSQL via Prisma.'
